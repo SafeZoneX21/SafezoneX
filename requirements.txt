@@ -1,0 +1,4 @@
+Flask==2.0.1
+geopy==2.2.0
+folium==0.12.1
+Werkzeug==2.0.1
