@@ -88,6 +88,39 @@ def get_db_connection():
     conn = sqlite3.connect('kidtracker.db')
     conn.row_factory = sqlite3.Row
     return conn
+# --- Tambahan: Fungsi pengecekan geofence ---
+def check_geofence(latitude, longitude, user_id):
+    conn = get_db_connection()
+    geofences = conn.execute(
+        'SELECT * FROM geofences WHERE user_id = ? AND is_active = 1',
+        (user_id,)
+    ).fetchall()
+    conn.close()
+
+    R = 6371000  # Radius bumi dalam meter
+    lat1 = math.radians(latitude)
+    lon1 = math.radians(longitude)
+
+    for geofence in geofences:
+        lat2 = math.radians(geofence['center_lat'])
+        lon2 = math.radians(geofence['center_lng'])
+        dlon = lon2 - lon1
+        dlat = lat2 - lat1
+
+        a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        distance = R * c
+
+        if distance <= geofence['radius']:
+            return True  # Dalam zona aman
+    return False  # Di luar zona aman
+
+# --- Fungsi koneksi DB ---
+def get_db_connection():
+    conn = sqlite3.connect('kidtracker.db')
+    conn.row_factory = sqlite3.Row
+    return conn
+
 
 # Routes
 @app.route('/')
@@ -485,36 +518,33 @@ def logout():
 # API Routes for location updates
 @app.route('/api/update_location', methods=['POST'])
 def update_location():
-    """API endpoint untuk update lokasi via cURL"""
     try:
         data = request.get_json()
-        
-        # Validasi data yang diperlukan
         required_fields = ['user_id', 'latitude', 'longitude']
         for field in required_fields:
             if field not in data:
                 return jsonify({"error": f"Field '{field}' is required"}), 400
-        
-        # Optional fields
-        is_safe_zone = data.get('is_safe_zone', True)
-        distance_from_home = data.get('distance_from_home', 0)
-        
+
+        # Pengecekan zona aman dari sisi server
+        is_safe_zone = check_geofence(data['latitude'], data['longitude'], data['user_id'])
+        distance_from_home = data.get('distance_from_home', 0)  # Optional
+
         conn = get_db_connection()
-        
-        # Verify user exists
+
+        # Validasi user
         user = conn.execute('SELECT id FROM users WHERE id = ?', (data['user_id'],)).fetchone()
         if not user:
             conn.close()
             return jsonify({"error": "User not found"}), 404
-        
-        # Insert location data
+
+        # Simpan lokasi
         conn.execute(
             '''INSERT INTO locations (user_id, latitude, longitude, is_safe_zone, distance_from_home) 
                VALUES (?, ?, ?, ?, ?)''',
             (data['user_id'], data['latitude'], data['longitude'], is_safe_zone, distance_from_home)
         )
-        
-        # Hapus data lokasi yang lebih dari 50 data terakhir
+
+        # Batasi riwayat
         conn.execute('''
             DELETE FROM locations 
             WHERE user_id = ? 
@@ -525,16 +555,20 @@ def update_location():
                 LIMIT 50
             )
         ''', (data['user_id'], data['user_id']))
-        
+
         conn.commit()
         conn.close()
-        
+
+        # Logging atau debug
+        print(f"[INFO] User {data['user_id']} berada di zona aman: {is_safe_zone}")
+
         return jsonify({
-            "status": "success", 
+            "status": "success",
             "message": "Location updated successfully",
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "is_safe_zone": is_safe_zone
         }), 200
-        
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -703,8 +737,8 @@ def check_connection_status(device_id):
     conn.close()
     
     if relation:
-        return jsonify({'connection_status': relation['status']})
-    return jsonify({'connection_status': 'not_found'}), 404
+        return jsonify({'status': relation['status']})
+    return jsonify({'status': 'not_found'}), 404
 
 @app.route('/api/get_geofences')
 @login_required
@@ -798,6 +832,10 @@ def get_location_history():
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/punyaAdminmin')
+def admin():
+    return render_template("admin.html")
 
 if __name__ == '__main__':
     init_db()  # Initialize database tables
